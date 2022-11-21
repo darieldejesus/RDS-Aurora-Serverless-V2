@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for creating a stack with Aurora Serverless V2 cluster and instance.'
+Parameters:
+  MasterUsername:
+    Type: String
+  MasterUserPassword:
+    Type: String
+    NoEcho: true
+Resources:
+  DBCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: aurora-mysql
+      EngineVersion: 8.0.mysql_aurora.3.02.1
+      BackupRetentionPeriod: 30
+      MasterUsername: !Ref MasterUsername
+      MasterUserPassword: !Ref MasterUserPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 2
+      StorageEncrypted: true
+      KmsKeyId: !Ref RDSKmsKey
+      VpcSecurityGroupIds:
+        - !Ref ClusterSecurityGroup
+
+  DBInstanceA:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      DBClusterIdentifier: !Ref DBCluster
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      DBInstanceClass: db.serverless
+      Engine: aurora-mysql
+      PubliclyAccessible: true
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Ref AWS::StackName
+      SubnetIds:
+        - !Ref ClusterSubnetA
+        - !Ref ClusterSubnetB
+
+  ClusterVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 172.16.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: stack
+          Value: !Ref AWS::StackName
+
+  VPCInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: stack
+          Value: !Ref AWS::StackName
+
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ClusterVPC
+      InternetGatewayId: !Ref VPCInternetGateway
+
+  ClusterSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ClusterVPC
+      CidrBlock: 172.16.0.0/20
+      AvailabilityZone: 'us-east-1a'
+      Tags:
+        - Key: stack
+          Value: !Ref AWS::StackName
+  
+  ClusterSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ClusterVPC
+      CidrBlock: 172.16.16.0/20
+      AvailabilityZone: 'us-east-1b'
+      Tags:
+        - Key: stack
+          Value: !Ref AWS::StackName
+
+  ClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Ref AWS::StackName
+      VpcId: !Ref ClusterVPC
+
+  ClusterSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: 'Allow inbound connections for MySQL (3306)'
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      CidrIp: '0.0.0.0/0'
+      GroupId: !Ref ClusterSecurityGroup
+
+  ClusterSecurityGroupEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: 'Allow all outbound connections for MySQL (3306)'
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      CidrIp: '0.0.0.0/0'
+      GroupId: !Ref ClusterSecurityGroup
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ClusterVPC
+      Tags:
+        - Key: stack
+          Value: !Ref AWS::StackName
+  
+  PublicRoute1:
+    Type: AWS::EC2::Route
+    DependsOn: AttachInternetGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref VPCInternetGateway
+  
+  SubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ClusterSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  
+  SubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ClusterSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  RDSKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      KeyPolicy:
+        Version:  2012-10-17
+        Id: !Sub 'kms-key-rds-${AWS::StackName}'
+        Statement:
+          - Sid: 'Allow direct access to key metadata to the account'
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - 'kms:*'
+            Resource: '*'
+      Tags:
+        - Key: stack
+          Value: !Ref AWS::StackName
+
+  RDSKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}'
+      TargetKeyId: !Ref RDSKmsKey
